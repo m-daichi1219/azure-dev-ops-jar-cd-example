@@ -7,7 +7,7 @@ variables:
   # TODO: ご自身の環境に合わせて変数を設定してください
   awsServiceConnection: "Your_AWS_Service_Connection_Name" # Azure DevOps の AWS Service Connection 名
   awsRegion: "ap-northeast-1" # 対象の AWS リージョン
-  s3BucketName: "jar-cd-example-artifacts-279939227049-ap-northeast-1" # ★★★ CDK で作成した S3 バケット名を設定してください ★★★
+  s3BucketName: "your-build-artifacts-bucket" # ★★★ CDK で作成した S3 バケット名を設定してください ★★★
   mavenPOMFile: "pom.xml" # Maven プロジェクトの pom.xml パス
 
 stages:
