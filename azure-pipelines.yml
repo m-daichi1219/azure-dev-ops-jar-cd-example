@@ -68,72 +68,72 @@ stages:
               failOnStandardError: true
             condition: and(succeeded(), ne(variables['artifactVersion'], ''), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')) # バージョン抽出成功かつ release ブランチの場合のみ実行
 
-- stage: DeployToEC2
-  displayName: 'Deploy Application to EC2'
-  dependsOn: BuildAndUpload
-  condition: succeeded('BuildAndUpload') # 前のステージが成功した場合のみ実行
-  jobs:
-  - job: Deploy
-    displayName: 'Deploy via SSH'
-    pool:
-      vmImage: 'ubuntu-latest' # デプロイ実行エージェント
-    variables:
-      # TODO: ご自身の環境に合わせて変数を設定してください
-      sshServiceConnection: 'Your_EC2_SSH_Service_Connection_Name' # Azure DevOps の SSH Service Connection 名
-      deployTargetDirectory: '/path/to/your/app' # EC2 上のアプリケーションデプロイ先ディレクトリ
-      jarFileNamePattern: 'jar-cd-demo-*.jar' # ★ S3 からダウンロードする、および EC2 上で実行する jar ファイルのパターン
-      # --- アプリケーションの起動・停止コマンド --- (環境に合わせて修正してください)
-      appStopCommand: 'sudo systemctl stop your-app.service' # 例: systemd サービスの場合
-      appStartCommand: 'sudo systemctl start your-app.service' # 例: systemd サービスの場合
-      # appStopCommand: 'pkill -f your-app.*.jar' # 例: プロセスを直接 kill する場合
-      # appStartCommand: 'nohup java -jar $(System.DefaultWorkingDirectory)/target/your-app-*.jar > app.log 2>&1 &' # 例: java -jar で直接起動する場合
+  - stage: DeployToEC2
+    displayName: "Deploy Application to EC2"
+    dependsOn: BuildAndUpload
+    condition: succeeded('BuildAndUpload') # 前のステージが成功した場合のみ実行
+    jobs:
+      - job: Deploy
+        displayName: "Deploy via SSH"
+        pool:
+          vmImage: "ubuntu-latest" # デプロイ実行エージェント
+        variables:
+          # TODO: ご自身の環境に合わせて変数を設定してください
+          sshServiceConnection: "Your_EC2_SSH_Service_Connection_Name" # Azure DevOps の SSH Service Connection 名
+          deployTargetDirectory: "/path/to/your/app" # EC2 上のアプリケーションデプロイ先ディレクトリ
+          jarFileNamePattern: "jar-cd-demo-*.jar" # ★ S3 からダウンロードする、および EC2 上で実行する jar ファイルのパターン
+          # --- アプリケーションの起動・停止コマンド --- (環境に合わせて修正してください)
+          appStopCommand: "sudo systemctl stop your-app.service" # 例: systemd サービスの場合
+          appStartCommand: "sudo systemctl start your-app.service" # 例: systemd サービスの場合
+          # appStopCommand: 'pkill -f your-app.*.jar' # 例: プロセスを直接 kill する場合
+          # appStartCommand: 'nohup java -jar $(System.DefaultWorkingDirectory)/target/your-app-*.jar > app.log 2>&1 &' # 例: java -jar で直接起動する場合
 
-    steps:
-    # --- デプロイスクリプトを SSH 経由で実行 --- 
-    - task: SSH@0
-      displayName: 'Deploy Application to EC2 via SSH'
-      inputs:
-        sshEndpoint: '$(sshServiceConnection)' # 設定済みの SSH Service Connection 名
-        runOptions: 'inline'
-        inline: |
-          echo "Starting deployment to $(System.DefaultWorkingDirectory)"
-          set -e # エラーが発生したらスクリプトを停止
+        steps:
+          # --- デプロイスクリプトを SSH 経由で実行 ---
+          - task: SSH@0
+            displayName: "Deploy Application to EC2 via SSH"
+            inputs:
+              sshEndpoint: "$(sshServiceConnection)" # 設定済みの SSH Service Connection 名
+              runOptions: "inline"
+              inline: |
+                echo "Starting deployment to $(System.DefaultWorkingDirectory)"
+                set -e # エラーが発生したらスクリプトを停止
 
-          # 変数設定 (パイプライン変数から取得)
-          S3_BUCKET="$(s3BucketName)"
-          APP_VERSION="$(artifactVersion)"
-          DEPLOY_DIR="$(deployTargetDirectory)"
-          JAR_PATTERN="$(jarFileNamePattern)"
-          APP_STOP_CMD="$(appStopCommand)"
-          APP_START_CMD="$(appStartCommand)"
+                # 変数設定 (パイプライン変数から取得)
+                S3_BUCKET="$(s3BucketName)"
+                APP_VERSION="$(artifactVersion)"
+                DEPLOY_DIR="$(deployTargetDirectory)"
+                JAR_PATTERN="$(jarFileNamePattern)"
+                APP_STOP_CMD="$(appStopCommand)"
+                APP_START_CMD="$(appStartCommand)"
 
-          # S3 からのダウンロードパス (例: s3://your-bucket/1.2.3/your-app-1.2.3.jar)
-          # 注意: S3 パス内のファイル名を特定する必要があります。BuildAndUpload ステージの出力か、
-          #       aws s3 ls を使うなどして正確なファイル名を取得する必要があるかもしれません。
-          #       ここでは JAR_PATTERN を使ってコピーしますが、バージョン番号を含まないファイル名の場合は注意が必要です。
-          S3_SOURCE_PATH="s3://${S3_BUCKET}/${APP_VERSION}/"
-          LOCAL_JAR_PATH="${DEPLOY_DIR}/${JAR_PATTERN}" # ダウンロード先、および起動対象
+                # S3 からのダウンロードパス (例: s3://your-bucket/1.2.3/your-app-1.2.3.jar)
+                # 注意: S3 パス内のファイル名を特定する必要があります。BuildAndUpload ステージの出力か、
+                #       aws s3 ls を使うなどして正確なファイル名を取得する必要があるかもしれません。
+                #       ここでは JAR_PATTERN を使ってコピーしますが、バージョン番号を含まないファイル名の場合は注意が必要です。
+                S3_SOURCE_PATH="s3://${S3_BUCKET}/${APP_VERSION}/"
+                LOCAL_JAR_PATH="${DEPLOY_DIR}/${JAR_PATTERN}" # ダウンロード先、および起動対象
 
-          echo "Downloading artifact from ${S3_SOURCE_PATH} to ${DEPLOY_DIR}"
-          # 対象ディレクトリが存在しない場合は作成
-          mkdir -p "${DEPLOY_DIR}"
-          # S3 からファイルをダウンロード (awscli が EC2 に必要)
-          aws s3 cp "${S3_SOURCE_PATH}" "${DEPLOY_DIR}" --recursive --exclude "*" --include "${JAR_PATTERN}"
+                echo "Downloading artifact from ${S3_SOURCE_PATH} to ${DEPLOY_DIR}"
+                # 対象ディレクトリが存在しない場合は作成
+                mkdir -p "${DEPLOY_DIR}"
+                # S3 からファイルをダウンロード (awscli が EC2 に必要)
+                aws s3 cp "${S3_SOURCE_PATH}" "${DEPLOY_DIR}" --recursive --exclude "*" --include "${JAR_PATTERN}"
 
-          echo "Stopping application..."
-          # 既存のアプリケーションを停止 (コマンドは変数で指定)
-          eval ${APP_STOP_CMD}
-          # 少し待機 (プロセスが完全に終了するまで)
-          sleep 5
+                echo "Stopping application..."
+                # 既存のアプリケーションを停止 (コマンドは変数で指定)
+                eval ${APP_STOP_CMD}
+                # 少し待機 (プロセスが完全に終了するまで)
+                sleep 5
 
-          echo "Starting new application version..."
-          # 新しいアプリケーションを起動 (コマンドは変数で指定)
-          # 起動コマンド内で $LOCAL_JAR_PATH のようなパスを使う場合は、
-          # 展開されるように変数を設定してください。
-          # 例: eval "nohup java -jar ${LOCAL_JAR_PATH} > app.log 2>&1 &"
-          eval ${APP_START_CMD}
+                echo "Starting new application version..."
+                # 新しいアプリケーションを起動 (コマンドは変数で指定)
+                # 起動コマンド内で $LOCAL_JAR_PATH のようなパスを使う場合は、
+                # 展開されるように変数を設定してください。
+                # 例: eval "nohup java -jar ${LOCAL_JAR_PATH} > app.log 2>&1 &"
+                eval ${APP_START_CMD}
 
-          echo "Deployment script finished."
-          # TODO: 簡単なヘルスチェックを追加 (例: curl localhost:8080/health)
+                echo "Deployment script finished."
+                # TODO: 簡単なヘルスチェックを追加 (例: curl localhost:8080/health)
 
-        failOnStdErr: true # 標準エラー出力があればタスクを失敗させる
+              failOnStdErr: true # 標準エラー出力があればタスクを失敗させる
