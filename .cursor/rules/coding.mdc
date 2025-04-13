@@ -1,0 +1,121 @@
+---
+description: Coding Practice
+globs: **/*.ts
+---
+# コーディングプラクティス
+
+## 原則
+
+### コーディングスタイル
+
+- 型安全を保つために any を利用しない
+- 関数の引数と戻り値の型を必ず指定する
+- 関数・クラスはJSDocを記載する
+- LintはIDEの自動修正を利用する
+- 値の保持と操作を実行する場合にはクラス化する
+- 副作用の発生する実装はしない
+- テスト容易性を優先する
+- TDDで開発する
+- 早期リターンで条件分岐をフラット化
+
+### ドメイン駆動設計 (DDD)
+
+- 値オブジェクトとエンティティを区別
+- 集約で整合性を保証
+- リポジトリでデータアクセスを抽象化
+- 境界付けられたコンテキストを意識
+
+### テスト駆動開発 (TDD)
+
+- Red-Green-Refactorサイクル
+- テストを仕様として扱う
+- 小さな単位で反復
+- 継続的なリファクタリング
+- 詳細: [tdd.mdc](mdc:.cursor/rules/tdd.mdc)
+
+## 実装パターン
+
+### 値オブジェクト
+
+- 不変
+- 値に基づく同一性
+- 自己検証
+- ドメイン操作を持つ
+
+```typescript
+export class Price {
+  private _amount: number;
+  private _currency: string;
+
+  constructor(amount: number, currency: string) {
+    if (amount < 0) {
+      throw new Error("Price cannot be negative");
+    }
+    if (!currency) {
+      throw new Error("Currency is required");
+    }
+    this._amount = amount;
+    this._currency = currency;
+  }
+
+  get amount(): number {
+    return this._amount;
+  }
+
+  get currency(): string {
+    return this._currency;
+  }
+
+  equals(other: Price): boolean {
+    return this._amount === other._amount && this._currency === other._currency;
+  }
+
+  toString(): string {
+    return `${this._amount} ${this._currency}`;
+  }
+}
+```
+
+### エンティティ
+
+- IDに基づく同一性
+- 制御された更新
+- 整合性ルールを持つ
+
+### リポジトリ
+
+- ドメインモデルのみを扱う
+- 永続化の詳細を隠蔽
+- テスト用のインメモリ実装を提供
+- コマンドクエリ分離（CQRS）パターンを利用する
+
+### アダプターパターン
+
+- 外部依存を抽象化
+- インターフェースは呼び出し側で定義
+- テスト時は容易に差し替え可能
+
+## 実装手順
+
+1. **型設計**
+   - まず型を定義
+   - ドメインの言語を型で表現
+
+2. **コアドメインから実装**
+   - 外部依存のない関数・クラスを先に実装
+   - テストを先に書く
+
+3. **副作用を分離**
+   - IO操作は関数の境界に押し出す
+   - 副作用を持つ処理をPromiseでラップ
+
+4. **アダプター実装**
+   - 外部サービスやDBへのアクセスを抽象化
+   - テスト用モックを用意
+
+## プラクティス
+
+- 小さく始めて段階的に拡張
+- 過度な抽象化を避ける
+- コードよりも型を重視
+- 複雑さに応じてアプローチを調整
