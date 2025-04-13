@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "cdk-ec2-key-pair": "^4.0.1"
+  }
+}
