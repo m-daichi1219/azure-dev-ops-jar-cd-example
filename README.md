@@ -95,7 +95,7 @@
     - `deployTargetDirectory`: EC2 上のデプロイ先ディレクトリ (例: `/home/ec2-user/app`)
     - `appStopCommand`: EC2 上でアプリを停止するコマンド
     - `appStartCommand`: EC2 上でアプリを起動するコマンド
-    - `jarFileNamePattern`: `jar-cd-demo-*.jar` (通常はこのままで OK)
+    - `jarFileNamePattern`: `jar-cd-demo-*.jar` (通常はこのままで 問題ありません)
 
 ### 4.3. EC2 インスタンスの準備
 
@@ -126,9 +126,3 @@ curl http://<EC2_PUBLIC_IP>:8080/hello
 ```
 
 "Hello from Azure DevOps CI/CD!" と表示されれば成功です。
-
-If you want to learn more about creating good readme files then refer the following [guidelines](https://docs.microsoft.com/en-us/azure/devops/repos/git/create-a-readme?view=azure-devops). You can also seek inspiration from the below readme files:
-
-- [ASP.NET Core](https://github.com/aspnet/Home)
-- [Visual Studio Code](https://github.com/Microsoft/vscode)
-- [Chakra Core](https://github.com/Microsoft/ChakraCore)
