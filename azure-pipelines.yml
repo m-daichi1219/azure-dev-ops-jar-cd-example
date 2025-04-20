@@ -1,139 +1,218 @@
 trigger: none # 手動トリガーのみ
 
 pool:
-  vmImage: "ubuntu-latest"
+  vmImage: "ubuntu-latest" # Microsoft ホステッドエージェントを使用
 
 variables:
-  # TODO: ご自身の環境に合わせて変数を設定してください
-  awsServiceConnection: "Your_AWS_Service_Connection_Name" # Azure DevOps の AWS Service Connection 名
-  awsRegion: "ap-northeast-1" # 対象の AWS リージョン
-  s3BucketName: "your-build-artifacts-bucket" # ★★★ CDK で作成した S3 バケット名を設定してください ★★★
-  mavenPOMFile: "pom.xml" # Maven プロジェクトの pom.xml パス
+  # --- AWS 接続情報 --- #
+  # Azure DevOps の "Project Settings" > "Service connections" で作成した AWS 接続名を指定
+  awsServiceConnection: "Your_AWS_Service_Connection_Name" # TODO: 実際のサービス接続名に置き換えてください
+  # デプロイ対象の AWS リージョン
+  awsRegion: "ap-northeast-1"
+  # ビルド成果物 (JAR) とバージョン情報 (version.txt) を保存する S3 バケット名
+  # このバケットは事前に CDK スタック等で作成されている想定
+  s3BucketName: "Your_S3_Bucket_Name" # TODO: CDK で作成したバケット名に置き換えてください
+
+  # --- Maven プロジェクト設定 --- #
+  mavenPOMFile: "pom.xml"
+
+  # --- EC2 デプロイ設定 --- #
+  # EC2 インスタンスへの SSH 接続に使用するサービス接続名
+  sshServiceConnection: "Your_EC2_SSH_Service_Connection_Name" # TODO: 実際のサービス接続名に置き換えてください
+  # EC2 インスタンス上のアプリケーションデプロイ先ディレクトリ (SSH ユーザーが書き込み可能なパス)
+  deployTargetDirectory: "/home/ec2-user/app"
+  # デプロイする JAR ファイル名のパターン (Maven ビルドで生成されるファイル名に合わせる)
+  jarFileNamePattern: "jar-cd-demo-*.jar"
+  # アプリケーション停止コマンド (java -jar で直接実行している場合)
+  # pkill でプロセスを停止し、プロセスが存在しなくてもエラーにならないように `|| true` を付与
+  appStopCommand: "pkill -f jar-cd-demo.*.jar || true"
+  # アプリケーション起動コマンド (java -jar で直接実行している場合)
+  # nohup でバックグラウンド実行し、ログを app.log に出力。${LOCAL_JAR_PATH}, ${DEPLOY_DIR} は SSH スクリプト内で設定される
+  appStartCommand: "nohup java -jar ${LOCAL_JAR_PATH} > ${DEPLOY_DIR}/app.log 2>&1 &"
 
 stages:
+  # ===================================================================
+  # Stage 1: アプリケーションのビルドと S3 へのアップロード
+  # ===================================================================
   - stage: BuildAndUpload
     displayName: "Build and Upload to S3"
     jobs:
-      - job: Build
+      - job: BuildJob
         displayName: "Build Java Application"
         steps:
+          # 1. Java アプリケーションを Maven でビルド・パッケージング
           - task: Maven@4
             displayName: "Build with Maven"
             inputs:
               mavenPOMFile: "$(mavenPOMFile)"
-              goals: "package" # ビルドとパッケージングを実行
+              goals: "package"
               publishJUnitResults: true
               testResultsFiles: "**/surefire-reports/TEST-*.xml"
               javaHomeOption: "JDKVersion"
-              jdkVersionOption: "1.17" # 必要に応じて Java バージョンを修正
+              jdkVersionOption: "1.17"
               mavenVersionOption: "Default"
               mavenOptions: "-Xmx3072m"
               mavenAuthenticateFeed: false
               effectivePomSkip: false
               sonarQubeRunAnalysis: false
 
-          # release/ 配下のブランチ名からバージョン番号を抽出する (例: release/1.2.3 -> 1.2.3)
-          # 注意: このスクリプトはブランチ名が 'refs/heads/release/...' の形式であることを前提としています
+          # 2. リリースブランチ名からバージョン番号を抽出
+          #    - ブランチ名が "refs/heads/release/<バージョン>" 形式であることを期待
+          #    - 抽出したバージョンは version.txt に書き込む (後続の S3 アップロードとデプロイステージでの利用のため)
+          #    - release ブランチ以外の場合は "UNKNOWN" を設定
           - bash: |
-              # refs/heads/release/1.2.3 のような形式からバージョン部分を抽出
               version=$(echo "$(Build.SourceBranch)" | sed -n 's|^refs/heads/release/\(.*\)$|\1|p')
               if [ -z "$version" ]; then
-                echo "##vso[task.logissue type=error;]Could not extract version from branch $(Build.SourceBranch). Expected format: refs/heads/release/<version>"
-                exit 1
+                version="UNKNOWN"
+                echo "Not a release branch, setting version to UNKNOWN."
+              else
+                echo "Extracted version: $version"
               fi
-              echo "Extracted version: $version"
-              # パイプライン変数 'artifactVersion' として設定
-              echo "##vso[task.setvariable variable=artifactVersion;]$version"
-            displayName: "Extract Version from Branch Name"
-            condition: startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')
+              # パイプライン成果物と S3 アップロード用にファイルに書き出す
+              echo "Writing version to file: $version"
+              echo $version > $(Build.ArtifactStagingDirectory)/version.txt
+              # 後続のタスクで使うためにパイプライン変数も設定しておく (AWSCLIタスクのconditionで使用)
+              echo "##vso[task.setvariable variable=artifactVersion]$version"
+            name: SetVersionVar
+            displayName: "Extract Version and Write to File"
 
-          # TODO: 実際の成果物パスに合わせてください (例: target/*.jar)
+          # 3. Maven でビルドされた JAR ファイルをステージングディレクトリにコピー
           - task: CopyFiles@2
             displayName: "Copy Artifacts"
             inputs:
-              SourceFolder: "$(System.DefaultWorkingDirectory)/target" # Maven の出力ディレクトリ
-              Contents: "jar-cd-demo-*.jar" # ★ コピーするファイルを実際の JAR 名パターンに修正
+              SourceFolder: "$(System.DefaultWorkingDirectory)/target"
+              Contents: "$(jarFileNamePattern)" # 変数を使用
               TargetFolder: "$(Build.ArtifactStagingDirectory)"
 
+          # 4. ステージングディレクトリ内の JAR ファイルの具体的なパスを取得
+          #    - AWS CLI (s3 cp) タスクがワイルドカードを正しく扱えない場合があるため、
+          #      具体的なファイルパスを取得して後続のアップロードタスクで使用する
+          - bash: |
+              echo "Finding JAR file in $(Build.ArtifactStagingDirectory)"
+              JAR_FILE_PATH=$(find "$(Build.ArtifactStagingDirectory)" -name '$(jarFileNamePattern)' -print -quit)
+              if [ -z "$JAR_FILE_PATH" ]; then
+                echo "##vso[task.logissue type=error;]JAR file not found in $(Build.ArtifactStagingDirectory)"
+                exit 1
+              fi
+              echo "Found JAR file path: $JAR_FILE_PATH"
+              # 後続の AWS CLI タスクで使うためにファイルパスを変数に設定
+              echo "##vso[task.setvariable variable=foundJarPath]$JAR_FILE_PATH"
+            name: FindJarFile
+            displayName: "Find JAR File Path in Staging Directory"
+
+          # 5. バージョン情報ファイル (version.txt) をパイプライン成果物として発行 (任意だがデバッグ等に有用)
+          - task: PublishBuildArtifacts@1
+            displayName: "Publish Version Info Artifact"
+            inputs:
+              PathtoPublish: "$(Build.ArtifactStagingDirectory)/version.txt"
+              ArtifactName: "version_info"
+              publishLocation: "Container"
+            condition: and(succeeded(), ne(variables['artifactVersion'], 'UNKNOWN'))
+
+          # 6. バージョン情報ファイル (version.txt) を S3 バケットのルートにアップロード
+          #    - 理由: DeployToEC2 ステージの SSH スクリプト内で直接 S3 から取得するため
+          #      (Azure Pipelines の変数渡しが複雑または不安定な場合の代替策)
           - task: AWSCLI@1
-            displayName: "Upload Artifact to S3"
+            displayName: "Upload version.txt to S3 Root"
             inputs:
               awsCredentials: "$(awsServiceConnection)"
               regionName: "$(awsRegion)"
               awsCommand: "s3"
               awsSubCommand: "cp"
-              # 成果物を S3 バケットのバージョン名フォルダにアップロード
-              # パイプライン変数 s3BucketName を使用
-              awsArguments: "$(Build.ArtifactStagingDirectory)/jar-cd-demo-*.jar s3://$(s3BucketName)/$(artifactVersion)/" # ★ アップロード元ファイルパターンを修正
+              awsArguments: "$(Build.ArtifactStagingDirectory)/version.txt s3://$(s3BucketName)/version.txt"
               failOnStandardError: true
-            condition: and(succeeded(), ne(variables['artifactVersion'], ''), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')) # バージョン抽出成功かつ release ブランチの場合のみ実行
+            condition: and(succeeded(), ne(variables['artifactVersion'], 'UNKNOWN'))
 
+          # 7. アプリケーションの JAR ファイルを S3 バケットのバージョン別フォルダにアップロード
+          - task: AWSCLI@1
+            displayName: "Upload JAR to S3 Version Folder"
+            inputs:
+              awsCredentials: "$(awsServiceConnection)"
+              regionName: "$(awsRegion)"
+              awsCommand: "s3"
+              awsSubCommand: "cp"
+              awsArguments: "$(foundJarPath) s3://$(s3BucketName)/$(artifactVersion)/" # FindJarFile で見つけたパスと SetVersionVar で設定したバージョンを使用
+              failOnStandardError: true
+            condition: and(succeeded(), ne(variables['artifactVersion'], 'UNKNOWN'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'))
+
+  # ===================================================================
+  # Stage 2: EC2 インスタンスへのアプリケーションデプロイ
+  # ===================================================================
   - stage: DeployToEC2
     displayName: "Deploy Application to EC2"
     dependsOn: BuildAndUpload
-    condition: succeeded('BuildAndUpload') # 前のステージが成功した場合のみ実行
+    # 前のステージが成功し、かつバージョンが UNKNOWN でない場合のみ実行
+    # 注意: dependencies... 参照が不安定な場合があったため、より確実な実行条件が必要な場合がある
+    #       (例: BuildAndUpload の最後にフラグファイルを作成し、それを成果物として確認するなど)
+    condition: and(succeeded('BuildAndUpload'), ne(dependencies.BuildAndUpload.outputs['BuildJob.SetVersionVar.artifactVersion'], 'UNKNOWN'))
     jobs:
-      - job: Deploy
+      - job: DeployJob
         displayName: "Deploy via SSH"
         pool:
-          vmImage: "ubuntu-latest" # デプロイ実行エージェント
-        variables:
-          # TODO: ご自身の環境に合わせて変数を設定してください
-          sshServiceConnection: "Your_EC2_SSH_Service_Connection_Name" # Azure DevOps の SSH Service Connection 名
-          deployTargetDirectory: "/path/to/your/app" # EC2 上のアプリケーションデプロイ先ディレクトリ
-          jarFileNamePattern: "jar-cd-demo-*.jar" # ★ S3 からダウンロードする、および EC2 上で実行する jar ファイルのパターン
-          # --- アプリケーションの起動・停止コマンド --- (環境に合わせて修正してください)
-          appStopCommand: "sudo systemctl stop your-app.service" # 例: systemd サービスの場合
-          appStartCommand: "sudo systemctl start your-app.service" # 例: systemd サービスの場合
-          # appStopCommand: 'pkill -f your-app.*.jar' # 例: プロセスを直接 kill する場合
-          # appStartCommand: 'nohup java -jar $(System.DefaultWorkingDirectory)/target/your-app-*.jar > app.log 2>&1 &' # 例: java -jar で直接起動する場合
+          vmImage: "ubuntu-latest"
 
         steps:
-          # --- デプロイスクリプトを SSH 経由で実行 ---
+          # 1. EC2 インスタンス上でデプロイスクリプトを実行
           - task: SSH@0
             displayName: "Deploy Application to EC2 via SSH"
             inputs:
-              sshEndpoint: "$(sshServiceConnection)" # 設定済みの SSH Service Connection 名
+              sshEndpoint: "$(sshServiceConnection)"
               runOptions: "inline"
               inline: |
-                echo "Starting deployment to $(System.DefaultWorkingDirectory)"
-                set -e # エラーが発生したらスクリプトを停止
+                echo "Starting deployment script on remote host: $(hostname)"
+                set -e # エラー発生時にスクリプトを停止
 
-                # 変数設定 (パイプライン変数から取得)
-                S3_BUCKET="$(s3BucketName)"
-                APP_VERSION="$(artifactVersion)"
-                DEPLOY_DIR="$(deployTargetDirectory)"
-                JAR_PATTERN="$(jarFileNamePattern)"
-                APP_STOP_CMD="$(appStopCommand)"
-                APP_START_CMD="$(appStartCommand)"
+                # --- スクリプト内で使用する変数を設定 --- #
+                S3_BUCKET="$(s3BucketName)"         # パイプライン変数から取得
+                DEPLOY_DIR="$(deployTargetDirectory)"   # パイプライン変数から取得
+                JAR_PATTERN="$(jarFileNamePattern)"   # パイプライン変数から取得
+                APP_STOP_CMD="$(appStopCommand)"   # パイプライン変数から取得
+                APP_START_CMD="$(appStartCommand)" # パイプライン変数から取得
 
-                # S3 からのダウンロードパス (例: s3://your-bucket/1.2.3/your-app-1.2.3.jar)
-                # 注意: S3 パス内のファイル名を特定する必要があります。BuildAndUpload ステージの出力か、
-                #       aws s3 ls を使うなどして正確なファイル名を取得する必要があるかもしれません。
-                #       ここでは JAR_PATTERN を使ってコピーしますが、バージョン番号を含まないファイル名の場合は注意が必要です。
+                # --- S3 からバージョン情報を取得 --- #
+                # 理由: Azure Pipelines のステージ間変数渡しが不安定だったため、EC2 上で直接 S3 から取得
+                # 前提: BuildAndUpload ステージで version.txt が S3 ルートにアップロード済み
+                #       EC2 インスタンスの IAM Role に S3 読み取り権限 (s3:GetObject) が必要
+                #       EC2 インスタンスに AWS CLI がインストール済みであること
+                echo "Attempting to download version file from s3://${S3_BUCKET}/version.txt..."
+                aws s3 cp "s3://${S3_BUCKET}/version.txt" "/tmp/version.txt"
+                if [ ! -f "/tmp/version.txt" ]; then
+                  echo "##vso[task.logissue type=error;]Failed to download version.txt from S3 bucket root: s3://${S3_BUCKET}/version.txt"
+                  exit 1 # バージョン情報がないと続行できない
+                fi
+                APP_VERSION=$(cat "/tmp/version.txt")
+                rm "/tmp/version.txt" # 一時ファイルを削除
+
+                echo "Version to deploy: ${APP_VERSION}"
+                echo "Target directory: ${DEPLOY_DIR}"
+
+                # --- アプリケーション成果物 (JAR) を S3 からダウンロード --- #
                 S3_SOURCE_PATH="s3://${S3_BUCKET}/${APP_VERSION}/"
-                LOCAL_JAR_PATH="${DEPLOY_DIR}/${JAR_PATTERN}" # ダウンロード先、および起動対象
-
                 echo "Downloading artifact from ${S3_SOURCE_PATH} to ${DEPLOY_DIR}"
-                # 対象ディレクトリが存在しない場合は作成
-                mkdir -p "${DEPLOY_DIR}"
-                # S3 からファイルをダウンロード (awscli が EC2 に必要)
+                mkdir -p "${DEPLOY_DIR}" # デプロイ先ディレクトリを作成 (存在しない場合)
+                # S3 のバージョンフォルダから JAR ファイルをダウンロード
                 aws s3 cp "${S3_SOURCE_PATH}" "${DEPLOY_DIR}" --recursive --exclude "*" --include "${JAR_PATTERN}"
 
-                echo "Stopping application..."
-                # 既存のアプリケーションを停止 (コマンドは変数で指定)
-                eval ${APP_STOP_CMD}
-                # 少し待機 (プロセスが完全に終了するまで)
-                sleep 5
+                # --- ダウンロードした JAR ファイルのパスを確認 --- #
+                # 理由: appStartCommand で具体的なパスが必要な場合があるため
+                LOCAL_JAR_PATH=$(find "${DEPLOY_DIR}" -maxdepth 1 -name "${JAR_PATTERN}" -print -quit)
+                if [ -z "$LOCAL_JAR_PATH" ]; then
+                  echo "##vso[task.logissue type=error;]JAR file not found in ${DEPLOY_DIR} after download. Searched for pattern: ${JAR_PATTERN}"
+                  exit 1
+                fi
+                echo "Found local JAR: ${LOCAL_JAR_PATH}"
 
+                # --- 既存アプリケーションの停止 --- #
+                echo "Stopping application (if running)..."
+                eval ${APP_STOP_CMD} # 変数に格納された停止コマンドを実行
+                sleep 5 # プロセスが完全に停止するのを少し待つ
+
+                # --- 新しいアプリケーションの起動 --- #
                 echo "Starting new application version..."
-                # 新しいアプリケーションを起動 (コマンドは変数で指定)
-                # 起動コマンド内で $LOCAL_JAR_PATH のようなパスを使う場合は、
-                # 展開されるように変数を設定してください。
-                # 例: eval "nohup java -jar ${LOCAL_JAR_PATH} > app.log 2>&1 &"
+                # 変数に格納された起動コマンドを実行。${LOCAL_JAR_PATH}, ${DEPLOY_DIR} が展開される
                 eval ${APP_START_CMD}
 
-                echo "Deployment script finished."
-                # TODO: 簡単なヘルスチェックを追加 (例: curl localhost:8080/health)
+                echo "Deployment script finished successfully."
+                # TODO: アプリケーションのヘルスチェックを追加することを推奨 (例: curl localhost:8080/health)
 
-              failOnStdErr: true # 標準エラー出力があればタスクを失敗させる
+              failOnStdErr: true # スクリプト内で標準エラー出力があればタスクを失敗させる
