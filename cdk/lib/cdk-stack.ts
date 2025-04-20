@@ -12,7 +12,7 @@ export class CdkStack extends cdk.Stack {
     const artifactBucket = new s3.Bucket(this, "ArtifactBucket", {
       bucketName: `jar-cd-example-artifacts-${this.account}-${this.region}`,
       versioned: true,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
     });
